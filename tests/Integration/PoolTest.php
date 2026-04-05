@@ -256,8 +256,7 @@ final class PoolTest extends TestCase
             self::assertSame(3, $stats->borrowCount);
             self::assertSame(2, $stats->releaseCount);
             self::assertSame(1, $stats->discardCount);
-            self::assertSame(3, $stats->createCount); // 2 init + 1 on-demand... wait, 3 borrows from 2 init
-            self::assertGreaterThanOrEqual(3, $stats->createCount);
+            self::assertSame(3, $stats->createCount); // 2 init + 1 on-demand (borrows 1-2 from channel)
             self::assertSame(2, $stats->idle);
 
             $pool->close();
