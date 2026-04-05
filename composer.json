@@ -1,0 +1,45 @@
+{
+    "name": "phpdot/pool",
+    "description": "Generic coroutine-safe connection pool for Swoole. Holds any object. Channel-based with idle cleanup, optional heartbeat, and leak prevention.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Omar Hamdan",
+            "email": "omar@phpdot.com"
+        }
+    ],
+    "keywords": ["pool", "connection-pool", "swoole", "coroutine", "channel"],
+    "require": {
+        "php": ">=8.3",
+        "ext-swoole": ">=6.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0",
+        "phpstan/phpstan": "^2.0",
+        "phpstan/phpstan-strict-rules": "^2.0",
+        "swoole/ide-helper": "*",
+        "friendsofphp/php-cs-fixer": "^3.94"
+    },
+    "autoload": {
+        "psr-4": {
+            "PHPdot\\Pool\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PHPdot\\Pool\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "analyse": "phpstan analyse --memory-limit=256M",
+        "check": [
+            "@test",
+            "@analyse"
+        ]
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
