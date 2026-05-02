@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PHPdot\Pool\Tests\Fixtures;
 
-use PHPdot\Pool\ConnectorInterface;
+use PHPdot\Contracts\Pool\ConnectorInterface;
 
 final class FakeConnector implements ConnectorInterface
 {

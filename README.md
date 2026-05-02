@@ -1,6 +1,6 @@
 # phpdot/pool
 
-Generic coroutine-safe connection pool for Swoole. Holds any object. Channel-based with idle cleanup, optional heartbeat, and leak prevention. Zero phpdot dependencies.
+Generic coroutine-safe connection pool for Swoole. Holds any object. Channel-based with idle cleanup, optional heartbeat, and leak prevention.
 
 ---
 
@@ -216,12 +216,15 @@ Stops timers, closes all idle connections. Borrowed connections are closed when 
 
 ```php
 new PoolConfig(
-    minConnections: 2,        // pre-created, never shrink below
-    maxConnections: 10,       // hard limit per worker
-    borrowTimeout: 3.0,       // seconds to wait when exhausted
-    maxIdleTime: 300.0,       // seconds before idle cleanup (0.0 = disabled)
-    idleCheckInterval: 30.0,  // seconds between cleanup runs
-    heartbeatInterval: 0.0,   // seconds between heartbeat (0.0 = disabled)
+    minConnections: 2,                  // pre-created, never shrink below
+    maxConnections: 10,                 // hard limit per worker
+    borrowTimeout: 3.0,                 // seconds to wait when exhausted
+    maxIdleTime: 300.0,                 // seconds before idle cleanup (0.0 = disabled)
+    idleCheckInterval: 30.0,            // seconds between cleanup runs
+    heartbeatInterval: 0.0,             // seconds between heartbeat (0.0 = disabled)
+    validateOnBorrowAfterIdle: 5.0,     // call isAlive() on borrow when idle ≥ this many seconds
+                                        //   0.0 = always validate; negative = disabled
+    validateOnReturn: false,            // call isAlive() on release; close (don't re-pool) dead
 );
 ```
 
@@ -265,11 +268,42 @@ When `heartbeatInterval > 0.0`, a timer checks idle connections via `ConnectorIn
 5. Refill to `minConnections`
 
 ```php
-// Enable in production during incidents (config change, no code deploy)
-new PoolConfig(heartbeatInterval: 10.0);
+new PoolConfig(heartbeatInterval: 60.0);
 ```
 
-`isAlive()` must be lightweight — local state check, no network round trip.
+`isAlive()` should be lightweight. A single round-trip ping (e.g. `SELECT 1`) is acceptable and is the recommended implementation — for typical drivers, only a server-side check detects connections killed by `wait_timeout`, firewall idle drops, or server restarts.
+
+---
+
+## Validate-on-Borrow
+
+Purpose: catch dead connections at the moment they're handed to a caller, before the caller spends a query learning the connection is broken. TTL-gated to avoid pinging on every hot-path borrow.
+
+When `validateOnBorrowAfterIdle ≥ 0.0` and a popped connection has been idle ≥ that many seconds, the pool calls `isAlive()` before returning it. If dead, the connection is closed and the borrow loop continues — either popping another or creating a fresh one.
+
+```php
+new PoolConfig(
+    validateOnBorrowAfterIdle: 5.0,   // ping if idle ≥ 5s
+    // 0.0  = always validate (every borrow)
+    // -1.0 = disabled
+);
+```
+
+Hot borrow/release cycles skip the check; only "stale" connections get pinged.
+
+---
+
+## Validate-on-Return
+
+Purpose: belt-and-suspenders — catch connections that have died mid-use before they're put back in the pool.
+
+When `validateOnReturn = true`, `release()` calls `isAlive()` on the returned connection. Dead connections are closed (not re-pooled), and the pool refills toward `minConnections`.
+
+```php
+new PoolConfig(validateOnReturn: true);
+```
+
+Off by default — the connection just succeeded a query, so the check is usually redundant. Enable for "no tolerance" production stances.
 
 ---
 

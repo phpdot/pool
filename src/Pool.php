@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PHPdot\Pool;
 
+use PHPdot\Contracts\Pool\ConnectorInterface;
 use PHPdot\Pool\Exception\BorrowTimeoutException;
 use PHPdot\Pool\Exception\PoolClosedException;
 use Swoole\Coroutine\Channel;
@@ -89,37 +90,60 @@ final class Pool
             throw new PoolClosedException('Connection pool is closed');
         }
 
-        // Fast path: try non-blocking pop from channel
-        $item = $this->channel->pop(0.001);
+        $deadline = microtime(true) + $this->config->borrowTimeout;
 
-        if ($item instanceof PooledItem) {
-            return $this->markBorrowed($item->connection);
-        }
+        while (true) {
+            // Fast path: non-blocking pop from channel
+            $item = $this->channel->pop(0.001);
 
-        // Channel empty — can we create a new connection?
-        if ($this->currentCount < $this->config->maxConnections) {
-            // Reserve the slot BEFORE I/O to prevent race condition.
-            // connect() yields — without this, multiple coroutines could
-            // pass the < maxConnections check simultaneously.
-            $this->currentCount++;
+            if ($item instanceof PooledItem) {
+                $live = $this->validateBorrowedItem($item);
 
-            try {
-                $connection = $this->connector->connect();
-                $this->createCount++;
+                if ($live !== null) {
+                    return $this->markBorrowed($live);
+                }
 
-                return $this->markBorrowed($connection);
-            } catch (\Throwable $e) {
-                $this->currentCount--; // Release reserved slot on failure
-
-                throw $e;
+                continue; // dead connection — already closed; try next iteration
             }
-        }
 
-        // At capacity — wait for a release
-        $item = $this->channel->pop($this->config->borrowTimeout);
+            // Channel empty — can we create a new connection?
+            if ($this->currentCount < $this->config->maxConnections) {
+                // Reserve the slot BEFORE I/O to prevent race condition.
+                // connect() yields — without this, multiple coroutines could
+                // pass the < maxConnections check simultaneously.
+                $this->currentCount++;
 
-        if ($item instanceof PooledItem) {
-            return $this->markBorrowed($item->connection);
+                try {
+                    $connection = $this->connector->connect();
+                    $this->createCount++;
+
+                    return $this->markBorrowed($connection);
+                } catch (\Throwable $e) {
+                    $this->currentCount--; // Release reserved slot on failure
+
+                    throw $e;
+                }
+            }
+
+            // At capacity — wait for a release
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0.0) {
+                break;
+            }
+
+            $item = $this->channel->pop($remaining);
+
+            if ($item instanceof PooledItem) {
+                $live = $this->validateBorrowedItem($item);
+
+                if ($live !== null) {
+                    return $this->markBorrowed($live);
+                }
+
+                continue;
+            }
+
+            break; // pop timed out or channel closed
         }
 
         // Timeout or channel closed
@@ -134,6 +158,44 @@ final class Pool
                 $this->getWaitingCount(),
             ),
         );
+    }
+
+    /**
+     * Validate a popped item per the validate-on-borrow policy.
+     *
+     * Returns the connection if it should be handed out, or null if it was
+     * dead and has been closed (caller should try again).
+     */
+    private function validateBorrowedItem(PooledItem $item): object|null
+    {
+        if (!$this->shouldValidateOnBorrow($item)) {
+            return $item->connection;
+        }
+
+        if ($this->connector->isAlive($item->connection)) {
+            return $item->connection;
+        }
+
+        $this->closeConnection($item->connection);
+
+        return null;
+    }
+
+    /**
+     * Decide whether the popped item needs an `isAlive()` check before being
+     * handed to the caller. Honours `validateOnBorrowAfterIdle`:
+     * positive = TTL gate (validate when idle ≥ value), 0.0 = always validate,
+     * negative = disabled.
+     */
+    private function shouldValidateOnBorrow(PooledItem $item): bool
+    {
+        $threshold = $this->config->validateOnBorrowAfterIdle;
+
+        if ($threshold < 0.0) {
+            return false;
+        }
+
+        return microtime(true) - $item->lastReleasedAt >= $threshold;
     }
 
     /**
@@ -154,6 +216,13 @@ final class Pool
 
         if ($this->closed) {
             $this->closeConnection($connection);
+
+            return;
+        }
+
+        if ($this->config->validateOnReturn && !$this->connector->isAlive($connection)) {
+            $this->closeConnection($connection);
+            $this->refill();
 
             return;
         }
