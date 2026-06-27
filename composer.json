@@ -12,7 +12,7 @@
     "keywords": ["pool", "connection-pool", "swoole", "coroutine", "channel"],
     "require": {
         "php": ">=8.3",
-        "ext-swoole": ">=6.0",
+        "ext-swoole": ">=6.2",
         "phpdot/contracts": "^1.4"
     },
     "require-dev": {
