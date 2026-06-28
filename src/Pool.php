@@ -7,6 +7,7 @@ namespace PHPdot\Pool;
 use PHPdot\Contracts\Pool\ConnectorInterface;
 use PHPdot\Pool\Exception\BorrowTimeoutException;
 use PHPdot\Pool\Exception\PoolClosedException;
+use Swoole\Coroutine;
 use Swoole\Coroutine\Channel;
 use Swoole\Timer;
 
@@ -278,12 +279,17 @@ final class Pool
         $this->closed = true;
         $this->stopTimers();
 
-        // Close all idle connections in the channel
-        while (!$this->channel->isEmpty()) {
-            $item = $this->channel->pop(0.001);
+        // Draining the channel needs a coroutine (Channel::pop). When close()
+        // runs outside one — e.g. onWorkerStop during worker shutdown — skip the
+        // drain: closing the channel releases the pooled items and their
+        // connections close on destruction.
+        if (Coroutine::getCid() !== -1) {
+            while (!$this->channel->isEmpty()) {
+                $item = $this->channel->pop(0.001);
 
-            if ($item instanceof PooledItem) {
-                $this->closeConnection($item->connection);
+                if ($item instanceof PooledItem) {
+                    $this->closeConnection($item->connection);
+                }
             }
         }
 
